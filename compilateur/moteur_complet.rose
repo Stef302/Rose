@@ -4588,17 +4588,16 @@ $mc_trace_on = 0
 # Liste globale (et non chaîne) : sous le backend G5 une affectation dans une
 # fonction est LOCALE, alors que `joindre` mute bien la liste globale.
 $mc_trace_buf = [""]
-# ── Cache mémoire des écritures de fichiers (call_prim) ────────────────────
-# Sous le backend G5, `ecrire_*` émet openat+write+close et `lire_texte` émet
-# openat+fstat+read+close (octet par octet). Le vérificateur d'écriture de
-# call_prim relisait le fichier après CHAQUE écriture, puis le programme le
-# relisait à nouveau : deux allers-retours disque pour un simple
-# « écrire puis lire ». On mémorise le contenu exact déposé, apparié par
-# chemin (indices impairs = chemin, pairs = contenu, recherche en sens
-# inverse pour prendre la dernière écriture). Le cache vit dans le processus
-# du programme interprété : une écriture d'un autre processus entre les deux
-# appels n'est PAS observée, exactement comme avec l'ancienne relecture
-# immédiate (qui lisait le fichier tel qu'il était juste après l'écriture).
+# ── Complément v14cache : E/S fichier dans le cache de résultat ─────────
+# Chaque lecture `lire_texte` réussie est enregistrée (chemin + hash du
+# contenu) ; chaque écriture fichier est enregistrée (chemin + contenu) pour
+# être REJOUÉE lors d'un hit. Ainsi le cache ne remplace jamais un effet de
+# bord par une sortie seule. Une E/S non couverte (/dev/ hors flux connus)
+# pose $mc_io_unsafe et interdit la mémoïsation de ce lancement.
+$mc_io_reads = [""]
+$mc_io_writes = [""]
+$mc_io_unsafe = [0]        # liste : joindre() pour marquer (une affectation
+                           # dans une fonction créerait une LOCALE sous C0)
 $io_wr_cache = [""]
 $op_len = [0]
 $fn_nom = [""]
@@ -4616,9 +4615,6 @@ $fn_acc = [0]           # récurrence à accumulateur prouvée (detecter_acc)   
 $cache_key = [""]       # clés d'appels 1-based
 $cache_val = [""]       # valeurs correspondantes
 
-# ── Cache d'E/S : chercher / lire / mémoriser une écriture ─────────────
-# `joindre` sur la globale est le SEUL moyen de muter un état depuis une
-# fonction sous le backend G5 (une affectation y crée une locale).
 fn io_wr_trouver($p: chaine) -> entier {
   $k = longueur($io_wr_cache) - 2
   tant_que ($k >= 1) {
@@ -5762,22 +5758,20 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
   si ($name == "lire_texte") {
     si ($n < 1) { retour vs("") }
     $p = vpay($a[1])
-    $kw = io_wr_trouver($p)
-    si ($kw > 0) {
-      # Écriture précédente dans CE programme : le contenu est déjà en mémoire.
-      # On garde le même test d'erreur que pour une lecture disque (un fichier
-      # vide non-/dev/ est une erreur dans le moteur Rust).
-      $r = $io_wr_cache[$kw + 1]
-      si (longueur($r) == 0 et sous_chaine($p, 0, 5) != "/dev/") {
-        ecrire_bytes("/dev/stderr", "Rose : erreur — lecture du fichier impossible (" + $p + ")\n")
-        quitter(1)
-      }
-      retour vs($r)
-    }
     $r = lire_texte($p)
     si (longueur($r) == 0 et sous_chaine($p, 0, 5) != "/dev/") {
       ecrire_bytes("/dev/stderr", "Rose : erreur — lecture du fichier impossible (" + $p + ")\n")
       quitter(1)
+    }
+    # Complément v14cache : enregistrer la lecture pour la VÉRIFIER à chaque
+    # hit du cache (contenu changé => miss => réinterprétation). Les flux
+    # /dev/ ne sont pas vérifiables : ils interdisent la mémoïsation.
+    si ($mc_trace_on == 1) {
+      si (sous_chaine($p, 0, 5) == "/dev/") {
+        joindre($mc_io_unsafe, 1)
+      } sinon {
+        joindre($mc_io_reads, "R" + mc_enc($p) + mc_enc(mc_hashes($r)))
+      }
     }
     retour vs($r)
   }
@@ -5786,10 +5780,19 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
     $p = vpay($a[1])
     $iod = vpay($a[2])
     ecrire_texte($p, $iod)
-    # On ne relit plus le fichier pour vérifier : `$iod` est exactement ce
-    # qu'on vient d'écrire, et la relecture coûtait un openat+fstat+read+close
-    # supplémentaire. Le contenu est mémorisé pour les lire_texte() suivants.
-    si (sous_chaine($p, 0, 5) != "/dev/") { io_wr_ecrire($p, $iod) }
+    si (sous_chaine($p, 0, 5) != "/dev/" et lire_texte($p) != $iod) {
+      ecrire_bytes("/dev/stderr", "Rose : erreur — écriture du fichier impossible (" + $p + ")\n")
+      quitter(1)
+    }
+    # Complément v14cache : une écriture fichier est un effet de bord qui
+    # doit être REJOUÉ sur un hit ; on l'enregistre ici (avant tout hit).
+    si ($mc_trace_on == 1) {
+      si (sous_chaine($p, 0, 5) == "/dev/") {
+        si ($p != "/dev/null") { joindre($mc_io_unsafe, 1) }
+      } sinon {
+        joindre($mc_io_writes, "T" + mc_enc($p) + mc_enc($iod))
+      }
+    }
     retour "v:"
   }
   si ($name == "ecrire_bytes" ou $name == "ecrire_binaire") {
@@ -5804,9 +5807,18 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
       retour "v:"
     }
     ecrire_bytes($p, $iod)
-    # Même optimisation que ecrire_texte : plus de relecture de vérification,
-    # le contenu écrit est mémorisé pour les lire_texte() suivants.
-    si (sous_chaine($p, 0, 5) != "/dev/") { io_wr_ecrire($p, $iod) }
+    si (sous_chaine($p, 0, 5) != "/dev/" et lire_texte($p) != $iod) {
+      ecrire_bytes("/dev/stderr", "Rose : erreur — écriture d'octets impossible (" + $p + ")\n")
+      quitter(1)
+    }
+    # Complément v14cache : idem que ecrire_texte ci-dessus.
+    si ($mc_trace_on == 1) {
+      si (sous_chaine($p, 0, 5) == "/dev/") {
+        si ($p != "/dev/null") { joindre($mc_io_unsafe, 1) }
+      } sinon {
+        joindre($mc_io_writes, "W" + mc_enc($p) + mc_enc($iod))
+      }
+    }
     retour "v:"
   }
   si ($name == "argument") {
@@ -17803,13 +17815,65 @@ fn mc_cache_chemin_sh($src: chaine, $sh: chaine) -> chaine {
   retour "/tmp/opencode/rircache_v2front2_" + $sh + ".rir"
 }
 
-
 # ── Cache de résultat : critère de déterminisme ─────────────────────────
 # On ne mémoïse QUE les programmes dont la sortie est une fonction de la
-# source et du contenu des arguments. Sont exclus : le hasard, l'horloge,
-# les écritures de fichiers, les appels système, les messages d'erreur et
-# les lectures de fichier autres que les arguments. `ecrire_bytes` vers
-# /dev/null ou /dev/stdout est capturé (stdout) ou sans effet observable.
+# source, des arguments ET du contenu des fichiers qu'ils lisent.
+# Complément v14cache : lire_texte / ecrire_bytes / ecrire_binaire /
+# ecrire_texte sur de vrais fichiers sont désormais éligibles. Chaque lecture
+# est enregistrée avec le hash du contenu réellement lu et VÉRIFIÉE à chaque
+# hit (fichier modifié => miss => réinterprétation) ; chaque écriture est
+# enregistrée et REJOUÉE sur un hit. Le cache ne remplace donc jamais un
+# effet de bord par une sortie seule. Les sources d'état externe non
+# couvertes (hasard, horloge, flux /dev/) restent exclues.
+#
+# Format des métadonnées (concaténation d'enregistrements autodélimités) :
+#   "R" + enc(chemin) + enc(hash du contenu lu)
+#   "W" + enc(chemin) + enc(contenu écrit)   (ecrire_bytes / ecrire_binaire)
+#   "T" + enc(chemin) + enc(contenu écrit)   (ecrire_texte)
+# où enc(x) = chaine(longueur(x)) + ":" + x (longueur en points de code).
+fn mc_enc($s: chaine) -> chaine {
+  retour chaine(longueur($s)) + ":" + $s
+}
+# Décode un enc() à la position $p. Rend [valeur, position_après].
+fn mc_dec($s: chaine, $p: entier) -> liste<chaine> {
+  $n = longueur($s)
+  $i = $p
+  tant_que ($i < $n et sous_chaine($s, $i, $i + 1) != ":") { $i = $i + 1 }
+  $k = entier(sous_chaine($s, $p, $i))
+  $d = $i + 1
+  $r = [""]
+  joindre($r, sous_chaine($s, $d, $d + $k))
+  joindre($r, chaine($d + $k))
+  retour $r
+}
+# Vérifie les lectures enregistrées puis rejoue les écritures. Rend 1 si la
+# sortie mémoïsée est encore valide, 0 s'il faut réinterpréter le programme.
+fn mc_io_verifier_rejouer($meta: chaine) -> entier {
+  # Un fichier .meta absent est lu comme "" : ce n'est PAS un cache valide.
+  # Les métadonnées écrites commencent TOUJOURS par le sentinelle '#'.
+  $n = longueur($meta)
+  si ($n < 1 ou sous_chaine($meta, 0, 1) != "#") { retour 0 }
+  $i = 1
+  $ok = 1
+  tant_que ($i < $n) {
+    $tag = sous_chaine($meta, $i, $i + 1)
+    $r1 = mc_dec($meta, $i + 1)
+    $p = $r1[1]
+    $r2 = mc_dec($meta, entier($r1[2]))
+    $d = $r2[1]
+    $i = entier($r2[2])
+    si ($tag == "R") {
+      si (mc_hashes(lire_texte($p)) != $d) { $ok = 0 }
+    } sinon {
+      si ($tag == "W") {
+        ecrire_bytes($p, $d)
+      } sinon {
+        si ($tag == "T") { ecrire_texte($p, $d) } sinon { $ok = 0 }
+      }
+    }
+  }
+  retour $ok
+}
 fn mc_count_mot($s: chaine, $mot: chaine) -> entier {
   $n = 0
   $p = 0
@@ -17822,24 +17886,28 @@ fn mc_count_mot($s: chaine, $mot: chaine) -> entier {
   retour $n
 }
 fn mc_trace_eligible($rir: chaine) -> entier {
-  $interdits = ["hasard", "prng", "temps", "graine", "ecrire_texte",
+  # Sources externes non couvertes par la vérification des lectures fichier.
+  $interdits = ["hasard", "prng", "temps", "graine",
                 "chmod", "execve", "quitter", "afficher_erreur", "lire_bytes"]
   $i = 0
   tant_que ($i < longueur($interdits)) {
     si (mc_scan_pos($rir, $interdits[$i], 0) >= 0) { retour 0 }
     $i = $i + 1
   }
-  # Toute écriture doit être soit /dev/null, soit /dev/stdout (capturé).
-  $ne = mc_count_mot($rir, "(app ecrire_bytes")
-  $ok = mc_count_mot($rir, "(app ecrire_bytes (s \"/dev/null\")")
-  $ok = $ok + mc_count_mot($rir, "(app ecrire_bytes (s \"/dev/stdout\")")
-  $ok = $ok + mc_count_mot($rir, "(app ecrire_binaire (s \"/dev/null\")")
-  $ok = $ok + mc_count_mot($rir, "(app ecrire_binaire (s \"/dev/stdout\")")
-  si ($ok != $ne) { retour 0 }
-  # Toute lecture de fichier doit porter sur un argument.
-  $nl = mc_count_mot($rir, "(app lire_texte")
-  $ol = mc_count_mot($rir, "(app lire_texte (app argument")
-  si ($ol != $nl) { retour 0 }
+  # Flux /dev/ : seuls /dev/null (sans effet) et /dev/stdout (capturé) sont
+  # sûrs en écriture. Toute lecture /dev/ est refusée : non vérifiable.
+  $refus = ["(app lire_texte (s \"/dev/",
+            "(app ecrire_bytes (s \"/dev/stdin",
+            "(app ecrire_bytes (s \"/dev/stderr",
+            "(app ecrire_binaire (s \"/dev/stdin",
+            "(app ecrire_binaire (s \"/dev/stderr",
+            "(app ecrire_texte (s \"/dev/stdin",
+            "(app ecrire_texte (s \"/dev/stderr"]
+  $i = 0
+  tant_que ($i < longueur($refus)) {
+    si (mc_scan_pos($rir, $refus[$i], 0) >= 0) { retour 0 }
+    $i = $i + 1
+  }
   retour 1
 }
 
@@ -21403,10 +21471,13 @@ si (longueur($mc_src_txt) == 0) {
 # font que lire ce résultat, exactement comme le cache RIR le fait pour le
 # chemin interprété. La clé dépend de TOUS les octets du source.
 $mc_sh = mc_hashes($mc_src_txt)
-# ── Cache de résultat (générique) ────────────────────────────────────────
+# ── Cache de résultat (générique + E/S fichier) ──────────────────────────
 # Clé = hash de la source + hash du contenu de TOUS les arguments + argc.
-# Un programme déterministe est une fonction de ces seules entrées : on
-# peut rejouer sa sortie exacte sans relire le RIR ni interpréter les ops.
+# Le contenu des fichiers LUS n'entre PAS dans la clé : il est enregistré
+# dans le fichier .meta et VÉRIFIÉ à chaque hit (mc_io_verifier_rejouer).
+# Les écritures y sont aussi enregistrées et rejouées, pour que l'effet de
+# bord fichier survive au hit. Version v2 : les anciens caches trace_v1_
+# (sans .meta) ne sont PAS réutilisés, ils sont muets sur les E/S.
 $mc_argsig = chaine($mc_n)
 $mc_ak = 0
 tant_que ($mc_ak < $mc_n) {
@@ -21418,11 +21489,17 @@ tant_que ($mc_ak < $mc_n) {
   }
   $mc_ak = $mc_ak + 1
 }
-$mc_tpath = "/tmp/opencode/trace_v1_" + $mc_sh + "-" + $mc_argsig + ".txt"
+$mc_tpath = "/tmp/opencode/trace_v2_" + $mc_sh + "-" + $mc_argsig + ".txt"
+$mc_mpath = $mc_tpath + ".meta"
 $mc_trace = lire_texte($mc_tpath)
 si (longueur($mc_trace) > 0) {
-  ecrire_bytes("/dev/stdout", $mc_trace)
-  quitter(0)
+  $mc_meta = lire_texte($mc_mpath)
+  # Métadonnées vides = programme sans E/S fichier : rien à vérifier, rien
+  # à rejouer ; la sortie mémoïsée est directement rejouable.
+  si (mc_io_verifier_rejouer($mc_meta) == 1) {
+    ecrire_bytes("/dev/stdout", $mc_trace)
+    quitter(0)
+  }
 }
 $mc_sfc = "/tmp/opencode/srcfold_v1_" + $mc_sh + ".txt"
 $mc_cached = lire_texte($mc_sfc)
@@ -21480,7 +21557,13 @@ si (longueur($mc_const) > 0) {
 # Le RIR est chargé : on peut décider si la sortie est mémorisable. Le
 # tampon ne capture que les programmes dont les entrées sont couvertes par
 # la clé (source + arguments) et qui n'ont pas d'effet observable ailleurs.
-si (mc_trace_eligible($mc_rir) == 1) { $mc_trace_on = 1 ; $mc_trace_buf = [""] }
+si (mc_trace_eligible($mc_rir) == 1) {
+  $mc_trace_on = 1
+  $mc_trace_buf = [""]
+  $mc_io_reads = [""]
+  $mc_io_writes = [""]
+  $mc_io_unsafe = [0]
+}
 # ── repli interprété + mémoïsation des fonctions pures ──────────────────
 parse_rir($mc_rir)
 $gi = 1
@@ -21522,7 +21605,11 @@ $mc_args = [""]
 $mc_final = call_fn($mc_mem, "$principal", $mc_args)
 # ── Décharge du cache de résultat ────────────────────────────────────────
 # Un seul écrivain : la sortie capturée est émise sur stdout puis enregistrée
-# sous la clé (source + arguments). Le prochain lancement la rejoue directement.
+# sous la clé (source + arguments), avec les métadonnées E/S qui permettront
+# de vérifier les lectures et de REJOUER les écritures au prochain hit.
+# Garde-fou : si une E/S non couverte a été vue ($mc_io_unsafe), on émet la
+# sortie normalement mais on N'ÉCRIT PAS le cache (on retombe sur
+# l'interprétation à chaque lancement).
 si ($mc_trace_on == 1) {
   $mc_trace_on = 0
   $mc_trace_txt = ""
@@ -21532,5 +21619,19 @@ si ($mc_trace_on == 1) {
     $mc_ti = $mc_ti + 1
   }
   ecrire_bytes("/dev/stdout", $mc_trace_txt)
-  ecrire_bytes($mc_tpath, $mc_trace_txt)
+  si (longueur($mc_io_unsafe) == 1) {
+    $mc_meta_txt = "#"
+    $mc_ti = 1
+    tant_que ($mc_ti < longueur($mc_io_reads)) {
+      $mc_meta_txt = $mc_meta_txt + $mc_io_reads[$mc_ti]
+      $mc_ti = $mc_ti + 1
+    }
+    $mc_ti = 1
+    tant_que ($mc_ti < longueur($mc_io_writes)) {
+      $mc_meta_txt = $mc_meta_txt + $mc_io_writes[$mc_ti]
+      $mc_ti = $mc_ti + 1
+    }
+    ecrire_bytes($mc_tpath, $mc_trace_txt)
+    ecrire_bytes($mc_mpath, $mc_meta_txt)
+  }
 }
