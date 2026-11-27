@@ -49,3 +49,23 @@ est à égalité sur les autres.**
 Médiane 0,992 ; somme Rose 173,5 ms vs Rust 1258,5 ms. Les programmes E/S
 (t83–t86) sont désormais mis en cache avec rejeu des écritures et vérification
 des lectures. `t86` : 3,32 ms -> 0,95 ms à chaud.
+
+
+## CORRECTION MÉTHODOLOGIQUE (27/11) — benchmark CPU 19 valide
+
+Les benchmarks précédents utilisaient `PIN_CPU=20`, mais cette machine a
+20 cœurs numérotés 0–19 : `taskset -c 20` ÉCHOUAIT (rc=1) et les « mesures »
+capturent l'échec de taskset, pas les moteurs. Le bench réel, re-mesuré avec
+`taskset -c 19` sur machine calme (médiane 3–7, 140 programmes hors t224
+où Rust ne termine jamais) :
+
+- **Rose gagne 125 / 140**
+- Rust gagne 15 / 140
+- Médiane des ratios : **0,739**
+- Somme : Rose 79,5 ms — Rust 1178,5 ms
+
+Les 15 cas restants (t84 3,02×, g5b504 1,46×, t51 1,35×, t242 1,32×, t86 1,25×…)
+sont à présent les seuls écarts réels, mesurés sur un pin valide.
+
+Les commits `b4d3b70` (cache E/S) et `0ae0703` (rejeu E/S) ont été mesurés
+avec ce même pin invalide ; leur gain réel reste à re-confirmer en CPU 19.

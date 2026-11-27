@@ -1009,9 +1009,14 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
   si ($name == "abs") {
     si ($n < 1) { retour vi("0") }
     $v = val_abs($a[1])
-    si (vtag($v) == "i" et bcmp(babs(vpay($v)), "9223372036854775807") > 0) {
-      $fstr = big_sci(babs(vpay($v)))
-      retour "g:" + $fstr
+    si (vtag($v) == "i") {
+      $av = babs(vpay($v))
+      $lav = longueur($av)
+      # Garde i64 : bcmp uniquement à 19 chiffres, un seul babs.
+      si ($lav > 19) { retour "g:" + big_sci($av) }
+      si ($lav == 19) {
+        si (bcmp($av, "9223372036854775807") > 0) { retour "g:" + big_sci($av) }
+      }
     }
     retour $v
   }

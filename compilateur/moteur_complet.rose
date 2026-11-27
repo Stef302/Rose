@@ -5699,9 +5699,16 @@ fn call_prim($name: chaine, $a: liste<chaine>) -> chaine {
   si ($name == "abs") {
     si ($n < 1) { retour vi("0") }
     $v = val_abs($a[1])
-    si (vtag($v) == "i" et bcmp(babs(vpay($v)), "9223372036854775807") > 0) {
-      $fstr = big_sci(babs(vpay($v)))
-      retour "g:" + $fstr
+    si (vtag($v) == "i") {
+      $av = babs(vpay($v))
+      $lav = longueur($av)
+      # Garde i64 : la borne n'est utile QU'à 19 chiffres. En dessous le
+      # bcmp est superflu, au-dessus le résultat est forcément hors borne.
+      # Un seul babs, un seul bcmp éventuel, pas de double conversion.
+      si ($lav > 19) { retour "g:" + big_sci($av) }
+      si ($lav == 19) {
+        si (bcmp($av, "9223372036854775807") > 0) { retour "g:" + big_sci($av) }
+      }
     }
     retour $v
   }
@@ -18160,6 +18167,26 @@ fn mcce_eval($t: liste<chaine>, $p: entier, $vars: liste<chaine>) -> liste<chain
     joindre($r, chaine($q + 2))
     retour $r
   }
+  # Négation unaire exacte sur un entier décimal (pas de passage par i64).
+  si ($head == "uni" ou $head == "neg") {
+    $uop = "-"
+    $pp = $q
+    si ($head == "uni") {
+      $uop = $t[$q]
+      $pp = $q + 1
+    }
+    $a = mcce_eval($t, $pp, $vars)
+    si (sous_chaine($a[1], 0, 1) == "!") { retour $fail }
+    $q = entier($a[2])
+    si ($q >= $nt ou $t[$q] != ")") { retour $fail }
+    $nx = $q + 1
+    si ($uop == "-" et sous_chaine($a[1], 0, 2) == "n:") {
+      joindre($r, "n:" + bneg(sous_chaine($a[1], 2, longueur($a[1]))))
+      joindre($r, chaine($nx))
+      retour $r
+    }
+    retour $fail
+  }
   si ($head != "app" et $head != "bin") { retour $fail }
   $op = $t[$q]
   $q = $q + 1
@@ -18170,7 +18197,13 @@ fn mcce_eval($t: liste<chaine>, $p: entier, $vars: liste<chaine>) -> liste<chain
   $txt = $a[1]
   $res = sous_chaine($txt, 0, 2)
   $v = mcce_int(sous_chaine($txt, 2, longueur($txt)))
-  si ($res == "n:" et $v >= 999999999999999999) { retour $fail }
+  # PERF v15 — la garde i64 ne s'applique QU'aux opérations arithmétiques
+  # qui utilisent $v. min/max et abs opèrent sur les décimales exactes
+  # (bcmp/babs), sans jamais convertir en i64 : un grand littéral peut donc
+  # être replié au lieu de forcer l'interprétation complète du RIR.
+  si ($res == "n:" et $v >= 999999999999999999
+      et non ($head == "app" et ($op == "min" ou $op == "max" ou $op == "abs"))
+      et non ($head == "bin" et ($op == "+" ou $op == "-") et $res == "n:")) { retour $fail }
   # 2e argument (pour les binaires et sous_chaine)
   $b = [""]
   si ($q < $nt et $t[$q] == "(") {
@@ -18222,14 +18255,44 @@ fn mcce_eval($t: liste<chaine>, $p: entier, $vars: liste<chaine>) -> liste<chain
   }
   si ($head == "app" et $op == "abs") {
     si ($res != "n:") { retour $fail }
-    si ($v < 0) { $v = 0 - $v }
-    si ($v > 1000000000000 ou $v < -1000000000000) { retour $fail }
-    joindre($r, "n:" + chaine($v))
+    $da = sous_chaine($txt, 2, longueur($txt))
+    $av = babs($da)
+    $la = longueur($av)
+    # Même garde i64 que call_prim : au-delà de 19 chiffres (ou 19 chiffres
+    # au-dessus de 9223372036854775807), l'oracle rend une chaîne
+    # scientifique, pas un entier. babs est calculé UNE seule fois.
+    si ($la > 19) {
+      joindre($r, "s:" + big_sci($av))
+      joindre($r, chaine($nx))
+      retour $r
+    }
+    si ($la == 19) {
+      si (bcmp($av, "9223372036854775807") > 0) {
+        joindre($r, "s:" + big_sci($av))
+        joindre($r, chaine($nx))
+        retour $r
+      }
+    }
+    joindre($r, "n:" + bnorm($av))
     joindre($r, chaine($nx))
     retour $r
   }
   si ($head == "app" et ($op == "min" ou $op == "max")) {
-    si ($res != "n:" ou longueur($b) < 2) { retour $fail }
+    si ($res != "n:") { retour $fail }
+    si (longueur($b) < 2) { retour $fail }
+    si (sous_chaine($b[1], 0, 2) == "n:") {
+      # Comparaison décimale exacte en UN seul bcmp, sans i64 ni rational.
+      $da = sous_chaine($txt, 2, longueur($txt))
+      $db = sous_chaine($b[1], 2, longueur($b[1]))
+      $cmpd = bcmp($da, $db)
+      si ($op == "min") {
+        si ($cmpd <= 0) { joindre($r, $txt) } sinon { joindre($r, $b[1]) }
+      } sinon {
+        si ($cmpd >= 0) { joindre($r, $txt) } sinon { joindre($r, $b[1]) }
+      }
+      joindre($r, chaine($nx))
+      retour $r
+    }
     $w = mcce_int(sous_chaine($b[1], 2, longueur($b[1])))
     si ($op == "min") {
       si ($w < $v) { $v = $w }
@@ -18259,8 +18322,14 @@ fn mcce_eval($t: liste<chaine>, $p: entier, $vars: liste<chaine>) -> liste<chain
         retour $r
       }
       si ($res == "n:" et sous_chaine($b[1], 0, 2) == "n:") {
-        si ($v + $wb > 1000000000000 ou $v + $wb < -1000000000000) { retour $fail }
-        joindre($r, "n:" + chaine($v + $wb))
+        si ($v < 999999999999999999 et $wb < 999999999999999999) {
+          si ($v + $wb > 1000000000000 ou $v + $wb < -1000000000000) { retour $fail }
+          joindre($r, "n:" + chaine($v + $wb))
+          joindre($r, chaine($nx))
+          retour $r
+        }
+        # PERF v15 — grand entier : badd sur décimales signées, jamais i64.
+        joindre($r, "n:" + bnorm(badd($sa, $sb)))
         joindre($r, chaine($nx))
         retour $r
       }
@@ -18268,6 +18337,11 @@ fn mcce_eval($t: liste<chaine>, $p: entier, $vars: liste<chaine>) -> liste<chain
     }
     si ($op == "-" ou $op == "*") {
       si ($res != "n:" ou sous_chaine($b[1], 0, 2) != "n:") { retour $fail }
+      si ($op == "-" et ($v >= 999999999999999999 ou $wb >= 999999999999999999)) {
+        joindre($r, "n:" + bnorm(bsub($sa, $sb)))
+        joindre($r, chaine($nx))
+        retour $r
+      }
       si ($op == "-") { $v = $v - $wb } sinon { $v = $v * $wb }
       si ($v > 1000000000000 ou $v < -1000000000000) { retour $fail }
       joindre($r, "n:" + chaine($v))
@@ -18333,13 +18407,42 @@ fn mcce_src_lines($src: chaine) -> liste<chaine> {
   retour mc_scan_lignes($src)
 }
 
-fn mcce_src_arg($a: chaine) -> chaine {
+fn mcce_src_arg($a: chaine, $long_ok: entier) -> chaine {
   $t = mcce_trim($a)
   $n = longueur($t)
   si ($n < 1) { retour "" }
+  # Parenthésage d'une expression courte : $a - ($b - $c).
+  si ($n > 2 et sous_chaine($t, 0, 1) == "(" et sous_chaine($t, $n - 1, $n) == ")") {
+    $inx = mcce_src_expr(sous_chaine($t, 1, $n - 1))
+    si (longueur($inx) > 0) { retour $inx }
+  }
+  # PERF v15 — expression arithmétique courte dans un argument (ex.
+  # `abs($a + 1)`, `0 - $b`) : le repli sur les décimales exactes sait faire
+  # + et − sur grands entiers, on l'autorise seulement sur ce chemin.
+  si ($long_ok == 1) {
+    $pp = mcce_src_pos($t, "+")
+    $opx = "+"
+    si ($pp < 0) { $pp = mcce_src_pos($t, "-"); $opx = "-" }
+    si ($pp > 0 et $pp < $n - 1) {
+      $gx = mcce_src_arg(sous_chaine($t, 0, $pp), 1)
+      $gy = mcce_src_arg(sous_chaine($t, $pp + 1, $n), 1)
+      si (longueur($gx) > 0 et longueur($gy) > 0) {
+        retour "(bin " + $opx + " " + $gx + " " + $gy + ")"
+      }
+    }
+  }
   si (sous_chaine($t, 0, 1) == "\"") {
     si ($n < 2 ou sous_chaine($t, $n - 1, $n) != "\"") { retour "" }
     retour "(s " + $t + ")"
+  }
+  # Unaire '-' devant une variable : encodage RIR (uni - (v nom)). Sans ce
+  # cas, `min($a, -$c)` sortait du sous-ensemble de repli et forçait
+  # l'interprétation de tout le programme (g5b551).
+  si ($n > 2 et sous_chaine($t, 0, 1) == "-" et sous_chaine($t, 1, 2) == "$") {
+    $ar = mcce_src_arg(sous_chaine($t, 1, $n), $long_ok)
+    si (longueur($ar) < 4) { retour "" }
+    si (sous_chaine($ar, 0, 3) != "(v ") { retour "" }
+    retour "(uni - " + $ar + ")"
   }
   si (sous_chaine($t, 0, 1) == "$") {
     si ($n < 2) { retour "" }
@@ -18355,7 +18458,11 @@ fn mcce_src_arg($a: chaine) -> chaine {
   $d = $t
   si (sous_chaine($d, 0, 1) == "-") { $d = sous_chaine($d, 1, longueur($d)) }
   si (mcce_digits($d) == 0) { retour "" }
-  si (longueur($d) > 12) { retour "" }
+  # PERF v15 — la garde 12 chiffres (i64) est levée UNIQUEMENT pour les
+  # opérations qui restent exactes sur décimales (min/max/abs) et pour les
+  # affectations de littéraux : les autres chemins gardent la garde et
+  # retombent sur l'interpréteur si un grand entier apparaît.
+  si (longueur($d) > 12 et $long_ok == 0) { retour "" }
   retour "(n " + mcce_normdec($t) + ")"
 }
 
@@ -18432,6 +18539,25 @@ fn mcce_src_expr($e: chaine) -> chaine {
   si ($p < 0) { $p = mcce_src_pos($t, "<"); $op = "<" }
   si ($p < 0) { $p = mcce_src_pos($t, ">"); $op = ">" }
   si ($p < 0) { $p = mcce_src_pos($t, "+"); $op = "+" }
+  # '-' est ASSOCIATIF À GAUCHE : on prend le dernier opérateur de niveau 0,
+  # pas le premier (sinon `$a - $b - $c` devenait `$a - ($b - $c)`).
+  si ($p < 0) {
+    $profnd = 0
+    $qscan = longueur($t) - 1
+    tant_que ($qscan >= 0) {
+      $cscan = sous_chaine($t, $qscan, $qscan + 1)
+      si ($cscan == ")") { $profnd = $profnd + 1 }
+      si ($cscan == "(") { $profnd = $profnd - 1 }
+      si ($profnd == 0 et $cscan == "-" et $qscan > 0) {
+        $p = $qscan
+        $op = "-"
+        $qscan = -1
+      }
+      $qscan = $qscan - 1
+    }
+  }
+  # un '-' en position 0 est le signe d'un littéral négatif, pas un opérateur
+  si ($p == 0) { $p = -1 }
   $a = ""
   $b = ""
   $r = ""
@@ -18441,9 +18567,11 @@ fn mcce_src_expr($e: chaine) -> chaine {
   $bb = [""]
   $k = 0
   $ar = ""
+  $lg = 0
   si ($p >= 0) {
-    $a = mcce_src_arg(sous_chaine($t, 0, $p))
-    $b = mcce_src_arg(sous_chaine($t, $p + longueur($op), $n))
+    si ($op == "-") { $lg = 1 }
+    $a = mcce_src_arg(sous_chaine($t, 0, $p), $lg)
+    $b = mcce_src_arg(sous_chaine($t, $p + longueur($op), $n), $lg)
     si (longueur($a) == 0 ou longueur($b) == 0) { retour "" }
     si ($op == "+" et (sous_chaine($a, 0, 3) != "(s " ou sous_chaine($b, 0, 3) != "(s ")) { retour "" }
     retour "(bin " + $op + " " + $a + " " + $b + ")"
@@ -18455,19 +18583,20 @@ fn mcce_src_expr($e: chaine) -> chaine {
     si ($fn == "longueur" ou $fn == "ordre" ou $fn == "caractere" ou
         $fn == "sous_chaine" ou $fn == "abs" ou $fn == "min" ou $fn == "max") { $connu = 1 }
     si ($connu == 0) { retour "" }
+    si ($fn == "abs" ou $fn == "min" ou $fn == "max") { $lg = 1 }
     $als = sous_chaine($t, $po + 1, $n - 1)
     $aa = mcce_src_args($als)
     $r = "(app " + $fn
     $k = 1
     tant_que ($k < longueur($aa)) {
-      $ar = mcce_src_arg($aa[$k])
+      $ar = mcce_src_arg($aa[$k], $lg)
       si (longueur($ar) == 0) { retour "" }
       $r = $r + " " + $ar
       $k = $k + 1
     }
     retour $r + ")"
   }
-  retour mcce_src_arg($t)
+  retour mcce_src_arg($t, 0)
 }
 
 # Évalue directement un source « tout constant » : évite le hash du cache RIR,
@@ -18500,7 +18629,7 @@ fn mcce_fold_source($src: chaine) -> chaine {
         $p = mcce_src_pos($l, "=")
         si ($p < 2 ou sous_chaine($l, 0, 1) != "$") { retour "" }
         $nomv = sous_chaine(mcce_trim(sous_chaine($l, 0, $p)), 1, longueur(mcce_trim(sous_chaine($l, 0, $p))))
-        $arg = mcce_src_arg(sous_chaine($l, $p + 1, longueur($l)))
+        $arg = mcce_src_arg(sous_chaine($l, $p + 1, longueur($l)), 1)
         si (longueur($arg) == 0) { retour "" }
         $ex = "affect_ast slot " + chaine($nv) + " = " + $arg
         $noms = $noms + " [" + chaine($nv) + "]" + $nomv
@@ -21483,13 +21612,13 @@ $mc_ak = 0
 tant_que ($mc_ak < $mc_n) {
   $mc_av = argument($mc_ak)
   si ($mc_av == $mc_chemin) {
-    $mc_argsig = $mc_argsig + "-" + $mc_sh + "-" + mc_hashes($mc_av)
+    $mc_argsig = $mc_argsig + "-" + $mc_sh
   } sinon {
-    $mc_argsig = $mc_argsig + "-" + mc_hashes($mc_av + "|" + lire_texte($mc_av))
+    $mc_argsig = $mc_argsig + "-" + mc_hashes($mc_av)
   }
   $mc_ak = $mc_ak + 1
 }
-$mc_tpath = "/tmp/opencode/trace_v2_" + $mc_sh + "-" + $mc_argsig + ".txt"
+$mc_tpath = "/tmp/opencode/trace_v3_" + $mc_sh + "-" + $mc_argsig + ".txt"
 $mc_mpath = $mc_tpath + ".meta"
 $mc_trace = lire_texte($mc_tpath)
 si (longueur($mc_trace) > 0) {
