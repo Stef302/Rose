@@ -1966,6 +1966,25 @@ fn main() {
 /* ── installeur intégré (rose install) ──────────────────────────────── */
 /* 64 bits natif, interface console colorée, pas de NSIS. */
 
+/// Relance Rose APRÈS un téléchargement fait par le setup (downloader).
+///
+/// Le chemin stable `current\rose.exe` est utilisé : il pointe sur la version
+/// que `appliquer_paquets()` vient de poser. Sans binaire installé, on ne fait
+/// rien (le téléchargement reste réussi, l'utilisateur relancera à la main).
+fn relancer_apres_setup() {
+    let Some(racine) = velopack::dossier_racine() else { return };
+    let exe = racine.join("current").join(if cfg!(windows) { "rose.exe" } else { "rose" });
+    if !exe.is_file() {
+        return;
+    }
+    // `console` ouvre le REPL : l'utilisateur voit immédiatement que la
+    // version téléchargée fonctionne. Aucun argument `--setup` ici : on ne
+    // redéclenche PAS un second téléchargement.
+    if let Err(e) = std::process::Command::new(&exe).arg("console").spawn() {
+        eprintln!("Relance de Rose après téléchargement : {e}");
+    }
+}
+
 fn install_rose() {
     use std::io::{self, Write, BufRead};
     // « rose update --force » : retélécharge même si la version est à jour
@@ -1979,12 +1998,23 @@ fn install_rose() {
     // avec ROSE_VELOPACK_URL pointant sur un manifeste local `file://`).
     {
         let args: Vec<String> = std::env::args().collect();
+        let depuis_setup = args.iter().any(|a| a == "--setup" || a == "--downloader");
         let veut_velopack = std::env::var("ROSE_VELOPACK").is_ok()
             || std::env::var("VELOCABI").is_ok()
-            || args.iter().any(|a| a == "--velopack");
+            || args.iter().any(|a| a == "--velopack")
+            || depuis_setup;
         if veut_velopack {
             println!("Mise à jour Velopack…");
-            match velopack::check_and_update(true) {
+            // `--setup` / `--downloader` : appelé par le stub
+            // `compilateur/pe_stub_ressources.rose` (mode `setup`). Le clic sur
+            // le setup est un consentement explicite : on ne passe PAS par le
+            // garde-fou du mode « désactivé », SANS modifier config.json.
+            let resultat = if depuis_setup {
+                velopack::check_and_update_consenti(true)
+            } else {
+                velopack::check_and_update(true)
+            };
+            match resultat {
                 Ok(Some(v)) => {
                     // Sans launcher Velopack (installation faite à la main par
                     // Rose-win-Setup.exe), on applique NOUS-MÊMES le paquet :
@@ -1998,8 +2028,16 @@ fn install_rose() {
                         ),
                         Err(e) => eprintln!("Application du paquet : {e}"),
                     }
+                    if depuis_setup {
+                        relancer_apres_setup();
+                    }
                 }
-                Ok(None) => println!("Rose est déjà à jour."),
+                Ok(None) => {
+                    println!("Rose est déjà à jour.");
+                    if depuis_setup {
+                        relancer_apres_setup();
+                    }
+                }
                 Err(e) => eprintln!("Velopack : {e} — repli sur l'installeur classique."),
             }
             return;

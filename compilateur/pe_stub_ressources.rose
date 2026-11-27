@@ -770,12 +770,25 @@ fn setup_gui() -> entier {
   joindre($impnoms, "DrawTextW"); joindre($impdll, 1)
   joindre($impnoms, "GetClientRect"); joindre($impdll, 1)
   joindre($impnoms, "ExitProcess"); joindre($impdll, 2)
+  # ── DOWNLOADER (option a du doc SETUP_DOWNLOADER) ────────────────────
+  # Le stub machine nu ne sait PAS faire de HTTPS : on invoque le binaire
+  # Rose installé (`rose.exe update --velopack --setup`), qui fait lui-même
+  # l'appel API GitHub, le téléchargement du .nupkg et le SHA-256.
+  # GetModuleFileNameW + PathRemoveFileSpecW + lstrcatW construisent le
+  # chemin ABSOLU de rose.exe à côté du setup (fiable même si le répertoire
+  # courant est différent). ShellExecuteW lance le downloader.
+  joindre($impnoms, "GetModuleFileNameW"); joindre($impdll, 2)   # IAT 17
+  joindre($impnoms, "lstrcatW"); joindre($impdll, 2)             # IAT 18
+  joindre($dlls, "SHLWAPI.DLL")
+  joindre($impnoms, "PathRemoveFileSpecW"); joindre($impdll, 3)  # IAT 19
+  joindre($dlls, "SHELL32.DLL")
+  joindre($impnoms, "ShellExecuteW"); joindre($impdll, 4)        # IAT 20
   gimports()
 
   $wc = dzero(80)               # WNDCLASSEXW
   $cls = dstrw("RoseSetup")
   $titre = dstrw("Rose Setup")
-  $txt = dstrw("ROSE - installation selfhost")
+  $txt = dstrw("ROSE - telechargement de la derniere version...")
   $msg = dzero(48)              # MSG
   $ps = dzero(72)               # PAINTSTRUCT
   $rect = dzero(16)             # RECT
@@ -783,6 +796,11 @@ fn setup_gui() -> entier {
   $hicon = dzero(8)
   $hwnd = dzero(8)
   $hdc = dzero(8)
+  # Chaînes UTF-16 du downloader + tampon du chemin (260 WCHAR).
+  $rose_rel = dstrw("\\rose.exe")
+  $args_update = dstrw("update --velopack --setup")
+  $verbe_open = dstrw("open")
+  $chemin = dzero(520)
 
   # Sondes : on AJOUTE toujours dans la même liste global $probe (C0 ne
   # remplace pas une variable globale depuis une fonction) et on mesure des
@@ -860,6 +878,30 @@ fn setup_gui() -> entier {
   clea(2, $hwnd); cstmem(2, 0, 0)
   cmovrr(1, 0); cmovimm32(2, 1); ccall(8)   # ShowWindow(SW_SHOWNORMAL)
   clea(2, $hwnd); cldmem(1, 2, 0); ccall(9) # UpdateWindow
+
+  # ── LANCEMENT DU DOWNLOADER ──────────────────────────────────────────
+  # Le clic sur Rose-win-Setup.exe déclenche IMMÉDIATEMENT la synchronisation
+  # des versions : rose.exe interroge l'API GitHub, télécharge le .nupkg de la
+  # dernière version, vérifie son SHA-256 et le pose dans current\. AUCUNE
+  # copie de fichier local n'est faite ici : tout vient du réseau.
+  # Le cadre de 96 octets réservé plus haut couvre les 5 arguments de
+  # ShellExecuteW passés sur la pile ([rsp+0x20] et [rsp+0x28]).
+  cxor(1)                       # RCX = NULL : module = l'exécutable courant
+  clea(2, $chemin)              # RDX = tampon
+  cmovimm32r(8, 260)            # R8 = 260 WCHAR
+  ccall(17)                     # GetModuleFileNameW(NULL, buf, 260)
+  clea(1, $chemin)
+  ccall(19)                     # PathRemoveFileSpecW(buf) -> dossier du setup
+  clea(1, $chemin)
+  clea(2, $rose_rel)
+  ccall(18)                     # lstrcatW(buf, L"\\rose.exe")
+  cxor(1)                       # hwnd = NULL
+  clea(2, $verbe_open)          # verb = L"open"
+  clea(8, $chemin)              # file = <dossier>\rose.exe
+  clea(9, $args_update)         # params = L"update --velopack --setup"
+  cmovstk32(32, 0)              # lpDirectory = NULL
+  cmovstk32(40, 1)              # nShowCmd = SW_SHOWNORMAL (console visible)
+  ccall(20)                     # ShellExecuteW : lance le downloader Rose
 
   $boucle = clen()
   clea(1, $msg)                 # GetMessageW(&msg, 0, 0, 0)

@@ -90,7 +90,9 @@ ROSE_LAUNCHER_API=file:///tmp/vpk/api.json rose update --velopack
 
 # Preuve automatisée, en lecture seule, sur l'API réelle
 cargo test --release rose_update_voit_v0_1_79_reel -- --ignored --nocapture
-# → ROSE UPDATE VOIT : 0.1.76 → 0.1.79 (release v0.1.79, source GitHub (repli))
+# → ROSE UPDATE VOIT : 0.1.76 → <dernière release> (ex. v0.1.86 le 27/11/2026, source GitHub (repli))
+# Le test ne code PAS la dernière version en dur : il vérifie qu'elle est
+# strictement supérieure à 0.1.76 et qu'elle publie un .nupkg.
 # « GitHub (repli) » est le libellé de SourceVersions::GitHub : GitHub est la
 # source de repli par rapport au manifeste du site (libelle() dans velopack.rs).
 
