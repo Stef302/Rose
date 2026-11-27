@@ -43,3 +43,9 @@ est à égalité sur les autres.**
 - Somme : Rose 176,8 ms vs Rust 1260,1 ms
 - Pire écart Rose : `t86_ecrire_puis_lire` 2,72× (E/S fichier)
 - Meilleurs gains : `t72` 0,00× (Rust 1069 ms), `g5b520` 0,15×, `t75` 0,36×
+
+## Bench v0.1.85 (cache E/S) : Rose gagne 87/140 (vs 77/140 avant)
+
+Médiane 0,992 ; somme Rose 173,5 ms vs Rust 1258,5 ms. Les programmes E/S
+(t83–t86) sont désormais mis en cache avec rejeu des écritures et vérification
+des lectures. `t86` : 3,32 ms -> 0,95 ms à chaud.
