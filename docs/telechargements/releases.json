@@ -1,7 +1,24 @@
 {
   "source": "site",
-  "genere": "2026-11-27",
+  "genere": "2026-11-28",
   "versions": [
+    {
+      "version": "0.1.87",
+      "tag": "v0.1.87",
+      "titre": "Rose v0.1.87 — setup downloader + site",
+      "date": "2026-11-28",
+      "changelog": [
+        "Setup Windows = downloader: clic -> rose.exe update --velopack --setup -> site Rose (source primaire illimitée) -> GitHub repli -> nupkg SHA256 -> relance. releases.json 23 versions. Bench CPU19: Rose 132/140. Parité 141/141, point fixe b3ed9262."
+      ],
+      "assets": [
+        {
+          "nom": "Rose-0.1.87-full.nupkg",
+          "url": "https://stef302.github.io/Rose/telechargements/Rose-0.1.87-full.nupkg",
+          "sha256": "50a5160c7e9ca0e3baae3dc1df87cf434864dab2436a7f065bdeca1e1242fa7a",
+          "taille": 1955423
+        }
+      ]
+    },
     {
       "version": "0.1.86",
       "tag": "v0.1.86",
@@ -190,8 +207,8 @@
         {
           "nom": "releases.win.json",
           "url": "https://stef302.github.io/Rose/telechargements/releases.win.json",
-          "sha256": "a6b03c2bd6393351cb9b0569d672fbeec572ba39946dd680dadf923a5b4eddb8",
-          "taille": 7254
+          "sha256": "ac67c72d046755ef9d30d085729aad07c7900aaba28ff19b2f9c1fc4577dc521",
+          "taille": 7657
         },
         {
           "nom": "rose-aarch64-linux",
