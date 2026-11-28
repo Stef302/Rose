@@ -88,7 +88,7 @@ inkwell = { version = "0.7", optional = true, features = ["llvm18-1-prefer-dynam
 # (via `dep:cranelift`), activée par `native` = défaut. La configuration
 # `--no-default-features --features autonome` ne le compile PAS du tout :
 # c'est ce qui fait tomber `libc feature "default"/"std"` du graphe.
-cranelift = { version = "0.137", default-features = false, features = ["jit", "frontend", "module", "native"], optional = true }
+cranelift = { version = "0.138", default-features = false, features = ["jit", "frontend", "module", "native"], optional = true }
 
 [build-dependencies]
 cc = "1"
